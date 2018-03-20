@@ -98,6 +98,13 @@ oc create -f heketi-glusterfs-pvc.yaml
 persistentvolumeclaim "gluster-dyn-pvc" created
 ```
 
+Check after a few seconds, it should be Bound :
+```
+oc get pvc/gluster-dyn-pvc
+NAME              STATUS    VOLUME                                     CAPACITY   ACCESSMODES   STORAGECLASS       AGE
+gluster-dyn-pvc   Bound     pvc-d408e666-2c22-11e8-8bf0-fa163ed07dbb   1Gi        RWX           heketi-glusterfs   11s
+```
+
 Then create a test Pod :
 
 pvc-test-pod.yaml
@@ -136,4 +143,10 @@ Check the volume in the pod :
 oc rsh pvc-test-pod df -h /var/www/html
 Filesystem                                      Size  Used Avail Use% Mounted on
 10.0.1.10:vol_a8103f592747e664474e06a76e8aa043 1016M   33M  983M   4% /var/www/html
+```
+
+Clean test pod and PVC :
+```
+oc delete pods/pvc-test-pod 
+oc delete pvc/gluster-dyn-pvc
 ```
