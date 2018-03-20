@@ -1,0 +1,274 @@
+heat_template_version: 2016-10-14
+
+description: >
+  Glusterfs server
+
+parameters:
+  key_name:
+    description: SSH key name
+    type: string
+
+  image:
+    description: OS image
+    type: string
+
+  flavor:
+    description: flavor
+    type: string
+
+  os_volume_size:
+    description: OS volume size
+    type: number
+    default: 15
+
+  ssh_user:
+    description: SSH username
+    type: string
+
+  hostname:
+    description: Hostname
+    type: string
+
+  domain_name:
+    description: dns domain suffic
+    type: string
+
+  heketi_internal_security_group:
+    description: empty security group
+    type: string
+
+  heketi_external_ssh_security_group:
+    description: ID of the heketi SSH security group
+    type: string
+
+  heketi_external_api_security_group:
+    description: ID of the heketi API security group
+    type: string
+
+  external_network:
+    description: The name or ID of the external network
+    type: string
+    constraints:
+    - custom_constraint: neutron.network
+
+  fixed_heketi_network:
+    description: The name or ID of the heketi network
+    type: string
+    constraints:
+    - custom_constraint: neutron.network
+
+  fixed_heketi_subnet:
+    description: The name or ID of the heketi subnet
+    type: string
+    constraints:
+    - custom_constraint: neutron.subnet
+
+  use_fip_on_heketi_servers:
+    description: Enable the use of public floating IP on heketi nodes
+    type: boolean
+    default: false
+
+  internal_network:
+    description: The name or ID of the internal network
+    type: string
+    constraints:
+    - custom_constraint: neutron.network
+
+  internal_subnet:
+    description: The name or ID of the internal IPv4 space
+    type: string
+    constraints:
+    - custom_constraint: neutron.subnet
+
+  timeout:
+    description: Seconds to wait for cloud-init
+    type: number
+    default: 300
+
+  all_manage_ip:
+    description: space separated list of off gluster manage IP
+    type: string
+
+  all_storage_ip:
+    description: space separated list of off gluster storage IP
+    type: string
+
+  all_brick_device:
+    description: space separated list of off gluster brick device
+    type: string
+
+  docker_volume_size:
+    description: Docker volume size
+    type: number
+    default: 5
+
+  heketi_public_key:
+    description: Heketi SSH public key
+    type: string
+
+  heketi_private_key:
+    description: Heketi SSH private key
+    type: string
+
+  heketi_user_password:
+    description: Heketi user password
+    type: string
+
+  heketi_admin_password:
+    description: Heketi admin password
+    type: string
+
+conditions:
+  use_fip_on_heketi_servers: {equals: [{get_param: use_fip_on_heketi_servers}, true]}
+
+resources:
+
+  host:
+    type: OS::Nova::Server
+    properties:
+      flavor: {get_param: flavor}
+      name:
+        str_replace:
+          template: "HOST.DOMAIN"
+          params:
+            HOST: {get_param: hostname}
+            DOMAIN: {get_param: domain_name}
+      admin_user: {get_param: ssh_user}
+      key_name: {get_param: key_name}
+      networks:
+      - port: {get_resource: external_port}
+      - port: {get_resource: internal_port}
+      block_device_mapping:
+      - device_name: vda
+        delete_on_termination: false
+        volume_id: {get_resource: os_volume}
+      user_data_format: SOFTWARE_CONFIG
+      user_data: {get_resource: init}
+
+  internal_port:
+    type: OS::Neutron::Port
+    properties:
+      security_groups:
+      - {get_param: heketi_internal_security_group}
+      network: {get_param: internal_network} 
+      fixed_ips:
+      - subnet: {get_param: internal_subnet}
+      replacement_policy: AUTO
+
+  external_port:
+    type: OS::Neutron::Port
+    properties:
+      security_groups:
+      - {get_param: heketi_external_ssh_security_group}
+      - {get_param: heketi_external_api_security_group}
+      network: {get_param: fixed_heketi_network}
+
+  floating_ip:
+    type: OS::Neutron::FloatingIP
+    condition: use_fip_on_heketi_servers
+    properties:
+      floating_network: {get_param: external_network}
+      port_id: {get_resource: external_port}
+
+  os_volume:
+    type: OS::Cinder::Volume
+    properties:
+      image: {get_param: image}
+      size: {get_param: os_volume_size}
+
+  docker_volume:
+    type: OS::Cinder::Volume
+    properties:
+      size: {get_param: docker_volume_size}
+
+  volume_attachment_docker:
+    type: OS::Cinder::VolumeAttachment
+    properties:
+      volume_id: { get_resource: docker_volume }
+      instance_uuid: { get_resource: host }
+
+  init:
+    type: OS::Heat::MultipartMime
+    properties:
+      parts:
+      - config: {get_resource: cc_common}
+      - config: {get_resource: sc_heketi_boot}
+
+  cc_common:
+    type: OS::Heat::CloudConfig
+    properties:
+      cloud_config:
+        write_files:
+        - path: /etc/sysconfig/network-scripts/ifcfg-eth1
+          content:
+            str_replace:
+              params:
+                $IFNAME: eth1
+              template: {get_file: fragments/ifcfg-eth}
+        - path: /usr/heat_common.sh
+          permissions: 0755
+          content:
+            str_replace:
+              params:
+                $WC_NOTIFY: { get_attr: ['wait_handle', 'curl_cli'] }
+              template: {get_file: fragments/common.sh}
+        - path: /usr/heat_docker_volume.sh
+          permissions: 0755
+          content:
+            str_replace:
+              params:
+                HEAT_DOCKER_DEVICE: {get_resource: docker_volume}
+              template: {get_file: fragments/docker_volume.sh}
+        - path: /usr/heat_heketi_install.sh
+          permissions: 0755
+          content: {get_file: fragments/heketi_install.sh}
+        - path: /usr/heat_heketi_config.json
+          permissions: 0644
+          content:
+            str_replace:
+              params:
+                HEAT_USER_PASSWORD: {get_param: heketi_user_password}
+                HEAT_ADMIN_PASSWORD: {get_param: heketi_admin_password}
+              template: {get_file: fragments/heketi_config.json}
+        - path: /usr/heat_heketi_topology.sh
+          permissions: 0755
+          content:
+            str_replace:
+              params:
+                HEAT_ALL_MANAGE_IP: {get_param: all_manage_ip}
+                HEAT_ALL_STORAGE_IP: {get_param: all_storage_ip}
+                HEAT_ALL_BRICK_DEVICE: {get_param: all_brick_device}
+              template: {get_file: fragments/heketi_topology.sh}
+        - path: /usr/heat_heketi_topology.json
+          permissions: 0644
+          content: {get_file: fragments/heketi_topology.json}
+        - path: /root/.ssh/id_rsa.pub
+          permissions: 0600
+          content: {get_param: heketi_private_key}
+        ssh_authorized_keys:
+        - {get_param: heketi_public_key}
+
+  sc_heketi_boot:
+    type: OS::Heat::SoftwareConfig
+    properties:
+      config: |
+        #!/bin/bash
+        . /usr/heat_common.sh
+        trap trap_failure 0
+        set -e
+        set -x
+        ifup eth1                      || notify_failure "Unable to configure eth1"
+        /usr/heat_docker_volume.sh     || notify_failure "Failed to configure docker volume"
+        /usr/heat_heketi_topology.sh   || notify_failure "Failed to configure hekiti topology"
+        /usr/heat_heketi_install.sh    || notify_failure "Failed to install heketi"
+        notify_success "SoftwareConfig OK"
+
+  wait_condition:
+    type: OS::Heat::WaitCondition
+    properties:
+      handle: {get_resource: wait_handle}
+      timeout: {get_param: timeout}
+
+  wait_handle:
+    type: OS::Heat::WaitConditionHandle
+

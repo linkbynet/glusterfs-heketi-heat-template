@@ -1,0 +1,391 @@
+heat_template_version: 2016-10-14
+
+description: |
+  GlusterFS simple cluster
+
+parameters:
+  key_name:
+    type: string
+    description: ssh key name
+
+  ssh_user:
+    description: SSH username
+    type: string
+    default: centos
+
+  gluster_hostname:
+    description: gluster hostname prefix
+    type: string
+    default: gluster
+
+  heketi_hostname:
+    description: heketi hostname prefix
+    type: string
+    default: heketi
+
+  image:
+    type: string
+    description: disk image
+    default: CentOS-7-x86_64
+
+  os_volume_size:
+    type: number
+    description: OS volume size
+    default: 15
+
+  brick_volume_size:
+    type: number
+    description: Brick volume size
+    default: 100
+
+  flavor:
+    description: gluster server flavor 
+    type: string
+    default: c1.medium
+
+  domain_name:
+    description: dns domain suffic
+    type: string
+
+  use_fip_on_gluster_servers:
+    description: Enable the use of public floating IP on glusterfs nodes
+    type: boolean
+    default: false
+
+  use_fip_on_heketi_servers:
+    description: Enable the use of public floating IP on glusterfs nodes
+    type: boolean
+    default: false
+
+  allowed_gluster_ssh_prefixes:
+    description: Prefixes to allow in ingress security group rule for SSH on glusterfs servers
+    type: comma_delimited_list
+    default: "0.0.0.0/0"
+
+  allowed_heketi_ssh_prefixes:
+    description: Prefixes to allow in ingress security group rule for SSH on heketi servers
+    type: comma_delimited_list
+    default: "0.0.0.0/0"
+
+  allowed_heketi_api_prefixes:
+    description: Prefixes to allow in ingress security group rule for heketi API on heketi server
+    type: comma_delimited_list
+    default: "0.0.0.0/0"
+
+  allowed_gluster_clients_security_groups:
+    description: client security groups to allow in ingress security group rule for gluster protocol on gluster servers
+    type: comma_delimited_list
+
+  gluster_cidr:
+    description: the gluster subnet
+    type: string
+    default: 192.168.0.0/24
+
+  gluster_internal_cidr:
+    description: the gluster internal subnet
+    type: string
+    default: 192.168.1.0/24
+
+
+  external_network:
+    description: The external network that provides floating IP addresses for the nodes
+    type: string
+    constraints:
+    - custom_constraint: neutron.network
+
+  use_existing_subnet_for_fixed_subnet:
+    description: Enable the use of an existing subnet for glusterfs "fixed_subnet"
+    type: boolean
+    default: false
+
+  existing_fixed_subnet_id:
+    type: string
+    description: The subnet id to use if "use_existing_subnet_for_fixed_subnet" is set to true
+
+  existing_fixed_network_id:
+    type: string
+    description: The network id to use if "use_existing_subnet_for_fixed_subnet" is set to true
+
+  gluster_server_group_policies:
+    description: list of glusterfs server group policies
+    type: comma_delimited_list
+    default: ['anti-affinity']
+
+  heketi_user_password:
+    description: Heketi user password
+    type: string
+
+  heketi_admin_password:
+    description: Heketi admin password
+    type: string
+
+
+conditions:
+
+  create_gluster_fixed_subnet: {equals: [{get_param: use_existing_subnet_for_fixed_subnet}, false]}
+
+resources:
+
+  gluster_servers:
+    #depends_on: [gluster_subnet]
+    type: OS::Heat::ResourceGroup
+    properties: 
+      count: 3
+      resource_def:
+        type: glusterfs_server.yaml
+        properties:
+          key_name: { get_param: key_name }
+          image: { get_param: image }
+          flavor: { get_param: flavor }
+          ssh_user: {get_param: ssh_user}
+          hostname:
+            str_replace:
+              template: "%stackname%-%hostname%-%index%"
+              params:
+                '%stackname%': {get_param: 'OS::stack_name'}
+                '%hostname%': {get_param: gluster_hostname}
+          domain_name: {get_param: domain_name}
+          fixed_gluster_network: {if: [create_gluster_fixed_subnet, { get_resource: fixed_gluster_network }, { get_param: existing_fixed_network_id }]}
+          fixed_gluster_subnet: {if: [create_gluster_fixed_subnet, { get_resource: fixed_gluster_subnet }, { get_param: existing_fixed_subnet_id }]}
+          internal_network: {get_resource: internal_network}
+          internal_subnet: {get_resource: internal_subnet}
+          gluster_internal_security_group: {get_resource: gluster_internal_security_group}
+          gluster_internal_ssh_security_group: {get_resource: gluster_internal_ssh_security_group}
+          gluster_external_security_group: {get_resource: gluster_external_security_group}
+          gluster_external_ssh_security_group: {get_resource: gluster_external_ssh_security_group}
+          gluster_external_daemon_security_group: {get_resource: gluster_external_daemon_security_group}
+          gluster_external_brick0_security_group: {get_resource: gluster_external_brick0_security_group}
+          gluster_external_client_daemon_security_group: {get_resource: gluster_external_client_daemon_security_group}
+          gluster_external_client_brick0_security_group: {get_resource: gluster_external_client_brick0_security_group}
+          use_fip_on_gluster_servers: {get_param: use_fip_on_gluster_servers}
+          external_network: {get_param: external_network}
+          os_volume_size: {get_param: os_volume_size}
+          brick_volume_size: {get_param: brick_volume_size}
+          heketi_public_key: {get_attr: [heketi_ssh_keys, public_key]}
+          gluster_server_group: {get_resource: gluster_server_group} 
+
+  gluster_server_group:
+    type: OS::Nova::ServerGroup
+    properties:
+      name: gluster_server_group
+      policies: {get_param: gluster_server_group_policies}
+ 
+  gluster_external_ssh_security_group:
+    type: OS::Neutron::SecurityGroup
+    properties:
+      rules:
+        repeat:
+          for_each:
+            <%prefix%>: { get_param: allowed_gluster_ssh_prefixes }
+          template:
+            direction: ingress
+            remote_ip_prefix: <%prefix%>
+            protocol: tcp
+            port_range_min: 22
+            port_range_max: 22
+
+  gluster_internal_security_group:
+    type: OS::Neutron::SecurityGroup
+
+  gluster_internal_ssh_security_group:
+    type: OS::Neutron::SecurityGroup
+    properties:
+      rules:
+      - direction: ingress
+        protocol: tcp
+        port_range_min: 22
+        port_range_max: 22
+        remote_group_id: {get_resource: heketi_internal_security_group}
+
+  gluster_external_security_group:
+    type: OS::Neutron::SecurityGroup
+
+  gluster_external_daemon_security_group:
+    type: OS::Neutron::SecurityGroup
+    properties:
+      rules:
+      - direction: ingress
+        remote_group_id: {get_resource: gluster_external_security_group}
+        protocol: tcp
+        port_range_min: 24007
+        port_range_max: 24008
+
+  gluster_external_brick0_security_group:
+    type: OS::Neutron::SecurityGroup
+    properties:
+      rules:
+      - direction: ingress
+        remote_group_id: {get_resource: gluster_external_security_group}
+        protocol: tcp
+        port_range_min: 49152
+        port_range_max: 49152
+
+  gluster_external_client_daemon_security_group:
+    type: OS::Neutron::SecurityGroup
+    properties:
+      rules:
+        repeat:
+          for_each:
+            <%client_sg%>: { get_param: allowed_gluster_clients_security_groups }
+          template:
+            direction: ingress
+            remote_group_id: <%client_sg%>
+            protocol: tcp
+            port_range_min: 24007
+            port_range_max: 24008
+
+  gluster_external_client_brick0_security_group:
+    type: OS::Neutron::SecurityGroup
+    properties:
+      rules:
+        repeat:
+          for_each:
+            <%client_sg%>: { get_param: allowed_gluster_clients_security_groups }
+          template:
+            direction: ingress
+            remote_group_id: <%client_sg%>
+            protocol: tcp
+            port_range_min: 49152
+            port_range_max: 49152
+
+  fixed_gluster_network:
+    type: OS::Neutron::Net
+    condition: create_gluster_fixed_subnet
+
+  fixed_gluster_subnet:
+    type: OS::Neutron::Subnet
+    condition: create_gluster_fixed_subnet
+    properties:
+      cidr: {get_param: gluster_cidr}
+      network: {get_resource: fixed_gluster_network}
+
+  internal_network:
+    type: OS::Neutron::Net
+
+  internal_subnet:
+    type: OS::Neutron::Subnet
+    properties:
+      cidr: {get_param: gluster_internal_cidr}
+      network: {get_resource: internal_network}
+      gateway_ip: ""
+
+  external_router:
+    type: OS::Neutron::Router
+    condition: create_gluster_fixed_subnet
+    properties:
+      external_gateway_info:
+        network: {get_param: external_network}
+
+  external_router_interface:
+    type: OS::Neutron::RouterInterface
+    condition: create_gluster_fixed_subnet
+    properties:
+      router_id: {get_resource: external_router}
+      subnet: {get_resource: fixed_gluster_subnet}
+
+  heketi_servers:
+    depends_on: [gluster_servers]
+    type: OS::Heat::ResourceGroup
+    properties: 
+      count: 1
+      resource_def:
+        type: heketi_server.yaml
+        properties:
+          key_name: { get_param: key_name }
+          image: { get_param: image }
+          flavor: { get_param: flavor }
+          ssh_user: {get_param: ssh_user}
+          hostname:
+            str_replace:
+              template: "%stackname%-%hostname%-%index%"
+              params:
+                '%stackname%': {get_param: 'OS::stack_name'}
+                '%hostname%': {get_param: heketi_hostname}
+          domain_name: {get_param: domain_name}
+          fixed_heketi_network: {if: [create_gluster_fixed_subnet, { get_resource: fixed_gluster_network }, { get_param: existing_fixed_network_id }]}
+          fixed_heketi_subnet: {if: [create_gluster_fixed_subnet, { get_resource: fixed_gluster_subnet }, { get_param: existing_fixed_subnet_id }]}
+          internal_network: {get_resource: internal_network}
+          internal_subnet: {get_resource: internal_subnet}
+          heketi_internal_security_group: {get_resource: heketi_internal_security_group}
+          heketi_external_ssh_security_group: {get_resource: heketi_external_ssh_security_group}
+          heketi_external_api_security_group: {get_resource: heketi_external_api_security_group}
+          use_fip_on_heketi_servers: {get_param: use_fip_on_heketi_servers}
+          external_network: {get_param: external_network}
+          os_volume_size: {get_param: os_volume_size}
+          heketi_public_key: {get_attr: [heketi_ssh_keys, public_key]}
+          heketi_private_key: {get_attr: [heketi_ssh_keys, private_key]}
+          heketi_user_password: {get_param: heketi_user_password}
+          heketi_admin_password: {get_param: heketi_admin_password}
+          all_manage_ip:
+            list_join:
+            - " "
+            - {get_attr: [gluster_servers, manage_ip]}
+          all_storage_ip:
+            list_join:
+            - " "
+            - {get_attr: [gluster_servers, storage_ip]}
+          all_brick_device:
+            list_join:
+            - " "
+            - {get_attr: [gluster_servers, brick_device]}
+
+  heketi_internal_security_group:
+    type: OS::Neutron::SecurityGroup
+ 
+  heketi_external_ssh_security_group:
+    type: OS::Neutron::SecurityGroup
+    properties:
+      rules:
+        repeat:
+          for_each:
+            <%prefix%>: { get_param: allowed_heketi_ssh_prefixes }
+          template:
+            direction: ingress
+            remote_ip_prefix: <%prefix%>
+            protocol: tcp
+            port_range_min: 22
+            port_range_max: 22
+
+  heketi_external_api_security_group:
+    type: OS::Neutron::SecurityGroup
+    properties:
+      rules:
+        repeat:
+          for_each:
+            <%prefix%>: { get_param: allowed_heketi_api_prefixes }
+          template:
+            direction: ingress
+            remote_ip_prefix: <%prefix%>
+            protocol: tcp
+            port_range_min: 8080
+            port_range_max: 8080
+
+  heketi_ssh_keys:
+    type: OS::Nova::KeyPair
+    properties:
+      name:
+        str_replace:
+          template: "heketi_keys_STACK"
+          params:
+            STACK: {get_param: "OS::stack_id"}
+      save_private_key: true
+ 
+outputs:
+  all_manage_ip:
+    description: Management IP
+    value:
+      list_join:
+      - " "
+      - {get_attr: [gluster_servers, manage_ip]}
+  all_storage_ip:
+    description: Storage IP
+    value:
+      list_join:
+      - " "
+      - {get_attr: [gluster_servers, storage_ip]}
+  all_brick_device:
+    description: brick device
+    value:
+      list_join:
+      - " "
+      - {get_attr: [gluster_servers, brick_device]}

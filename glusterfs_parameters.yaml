@@ -1,0 +1,33 @@
+parameters:
+  key_name: xxx 
+  ssh_user: centos
+  domain_name: xxx
+  image: CentOS-7-x86_64
+  gluster_cidr: 192.168.1.0/24
+  external_network: public01
+
+  # Size of brick size in Gb. It will create a replica of 3 * brick_volume_size => total available will be brick_volume_size
+  brick_volume_size: 100
+
+  use_fip_on_gluster_servers: true
+  use_fip_on_heketi_servers: true
+
+  use_existing_subnet_for_fixed_subnet: true
+  existing_fixed_network_id: ...
+  existing_fixed_subnet_id: ...
+
+  allowed_gluster_ssh_prefixes: "172.16.0.0/12"
+  allowed_heketi_ssh_prefixes: "172.16.0.0/12"
+  allowed_heketi_api_prefixes: null
+
+  heketi_user_password: change_me
+  heketi_admin_password: change_me
+
+  # List of client security groups to allow on glusterfs services
+  # For openshift-on-openstack : master_security_group and node_security_group ids
+  allowed_gluster_clients_security_groups: xxx,yyy
+
+  # Temporarary disable anti-affinity, if needed for tests
+  #gluster_server_group_policies: []
+
+

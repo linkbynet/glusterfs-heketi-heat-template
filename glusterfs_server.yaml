@@ -1,0 +1,267 @@
+heat_template_version: 2016-10-14
+
+description: >
+  Glusterfs server
+
+parameters:
+  key_name:
+    description: SSH key name
+    type: string
+
+  image:
+    description: OS image
+    type: string
+
+  flavor:
+    description: flavor
+    type: string
+
+  os_volume_size:
+    description: OS volume size
+    type: number
+    default: 15
+
+  brick_volume_size:
+    description: Gluster brick volume size
+    type: number
+    default: 100
+
+  ssh_user:
+    description: SSH username
+    type: string
+
+  hostname:
+    description: Hostname
+    type: string
+
+  domain_name:
+    description: dns domain suffic
+    type: string
+
+  gluster_internal_security_group:
+    description: ID of the gluster internal security group
+    type: string
+
+  gluster_internal_ssh_security_group:
+    description: ID of the Gluster security group for heketi access
+    type: string
+
+  gluster_external_security_group:
+    description: ID of the Gluster external security group
+    type: string
+
+  gluster_external_ssh_security_group:
+    description: ID of the Gluster SSH security group
+    type: string
+
+  gluster_external_daemon_security_group:
+    description: ID of the Gluster server daemon security group
+    type: string
+
+  gluster_external_brick0_security_group:
+    description: ID of the Gluster server brick0 security group
+    type: string
+
+  gluster_external_client_daemon_security_group:
+    description: ID of the Gluster server daemon security group for client access
+    type: string
+
+  gluster_external_client_brick0_security_group:
+    description: ID of the Gluster server brick0 security group for client access
+    type: string
+
+  external_network:
+    description: The name or ID of the external network
+    type: string
+    constraints:
+    - custom_constraint: neutron.network
+
+  fixed_gluster_network:
+    description: The name or ID of the gluster network
+    type: string
+    constraints:
+    - custom_constraint: neutron.network
+
+  fixed_gluster_subnet:
+    description: The name or ID of the gluster subnet
+    type: string
+    constraints:
+    - custom_constraint: neutron.subnet
+
+  use_fip_on_gluster_servers:
+    description: Enable the use of public floating IP on glusterfs nodes
+    type: boolean
+    default: false
+
+  internal_network:
+    description: The name or ID of the internal network
+    type: string
+    constraints:
+    - custom_constraint: neutron.network
+
+  internal_subnet:
+    description: The name or ID of the internal IPv4 space
+    type: string
+    constraints:
+    - custom_constraint: neutron.subnet
+
+  timeout:
+    description: Seconds to wait for cloud-init
+    type: number
+    default: 300
+
+  heketi_public_key:
+    description: SSH public key for heketi
+    type: string
+
+  gluster_server_group:
+    description: ID of a server group containing all the glusterfs servers
+    type: string
+
+conditions:
+  use_fip_on_gluster_servers: {equals: [{get_param: use_fip_on_gluster_servers}, true]}
+
+resources:
+
+  host:
+    type: OS::Nova::Server
+    properties:
+      flavor: {get_param: flavor}
+      name:
+        str_replace:
+          template: "HOST.DOMAIN"
+          params:
+            HOST: {get_param: hostname}
+            DOMAIN: {get_param: domain_name}
+      admin_user: {get_param: ssh_user}
+      key_name: {get_param: key_name}
+      networks:
+      - port: {get_resource: external_port}
+      - port: {get_resource: internal_port}
+      block_device_mapping:
+      - device_name: vda
+        delete_on_termination: false
+        volume_id: {get_resource: os_volume}
+      user_data_format: SOFTWARE_CONFIG
+      user_data: {get_resource: init}
+      scheduler_hints:
+        group: {get_param: gluster_server_group}
+
+  internal_port:
+    type: OS::Neutron::Port
+    properties:
+      security_groups:
+      - {get_param: gluster_internal_ssh_security_group}
+      network: {get_param: internal_network} 
+      fixed_ips:
+      - subnet: {get_param: internal_subnet}
+      replacement_policy: AUTO
+
+  external_port:
+    type: OS::Neutron::Port
+    properties:
+      security_groups:
+      - {get_param: gluster_external_security_group}
+      - {get_param: gluster_external_ssh_security_group}
+      - {get_param: gluster_external_daemon_security_group}
+      - {get_param: gluster_external_brick0_security_group}
+      - {get_param: gluster_external_client_daemon_security_group}
+      - {get_param: gluster_external_client_brick0_security_group}
+      network: {get_param: fixed_gluster_network}
+
+  floating_ip:
+    type: OS::Neutron::FloatingIP
+    condition: use_fip_on_gluster_servers
+    properties:
+      floating_network: {get_param: external_network}
+      port_id: {get_resource: external_port}
+
+  os_volume:
+    type: OS::Cinder::Volume
+    properties:
+      image: {get_param: image}
+      size: {get_param: os_volume_size}
+
+  brick_volume:
+    type: OS::Cinder::Volume
+    properties:
+      size: {get_param: brick_volume_size}
+
+  volume_attachment_brick:
+    type: OS::Cinder::VolumeAttachment
+    properties:
+      volume_id: { get_resource: brick_volume }
+      instance_uuid: { get_resource: host }
+
+  init:
+    type: OS::Heat::MultipartMime
+    properties:
+      parts:
+      - config: {get_resource: cc_common}
+      - config: {get_resource: sc_gluster_boot}
+
+  cc_common:
+    type: OS::Heat::CloudConfig
+    properties:
+      cloud_config:
+        write_files:
+        - path: /etc/sysconfig/network-scripts/ifcfg-eth1
+          content:
+            str_replace:
+              params:
+                $IFNAME: eth1
+              template: {get_file: fragments/ifcfg-eth}
+        - path: /usr/heat_common.sh
+          permissions: 0755
+          content:
+            str_replace:
+              params:
+                $WC_NOTIFY: { get_attr: ['wait_handle', 'curl_cli'] }
+              template: {get_file: fragments/common.sh}
+        #- path: /usr/heat_init_disk.sh
+        #  permissions: 0755
+        #  content:
+        #    str_replace:
+        #      params:
+        #        $BRICK_VOLUME_ID: {get_resource: brick_volume}
+        #      template: {get_file: fragments/init_disk.sh}
+        - path: /usr/heat_gluster_install.sh
+          permissions: 0755
+          content: {get_file: fragments/gluster_install.sh}
+        ssh_authorized_keys:
+        - {get_param: heketi_public_key}
+
+  sc_gluster_boot:
+    type: OS::Heat::SoftwareConfig
+    properties:
+      config: |
+        #!/bin/bash
+        . /usr/heat_common.sh
+        trap trap_failure 0
+        set -e
+        set -x
+        ifup eth1                       || notify_failure "Unable to configure eth1"
+        ## Disabled : will be done by heketi
+        #/usr/heat_init_disk.sh          || notify_failure "Error during brick disk configuration"
+        /usr/heat_gluster_install.sh    || notify_failure "Failed to install glusterfs"
+        notify_success "SoftwareConfig OK"
+
+  wait_condition:
+    type: OS::Heat::WaitCondition
+    properties:
+      handle: {get_resource: wait_handle}
+      timeout: {get_param: timeout}
+
+  wait_handle:
+    type: OS::Heat::WaitConditionHandle
+
+outputs:
+  manage_ip:
+    description: Management IP
+    value: {get_attr: [internal_port, fixed_ips, 0, ip_address]}
+  storage_ip:
+    description: Storage IP
+    value: {get_attr: [external_port, fixed_ips, 0, ip_address]}
+  brick_device:
+    description: brick device
+    value: {get_resource: brick_volume}
